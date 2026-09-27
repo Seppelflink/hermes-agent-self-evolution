@@ -665,45 +665,67 @@ Best Candidate → PR with full metrics
 
 ## Constraints & Guardrails
 
-Every candidate variant must pass ALL of these before it can be considered valid. Variants that fail any constraint are discarded — GEPA/MIPROv2 never see them as successful.
+This section records the intended safeguards and their current enforcement status.
+The full target-state checklist is not yet fully automated: the candidate
+orchestrator currently enforces the full test suite and skill size/frontmatter
+constraints by default. Tool and parameter description limits are available in
+the validator, but those artifact types are not currently evolved by the CLI.
+Prompt-caching compatibility and independent semantic-preservation thresholds
+remain policy/planned checks; a holdout score is not a semantic-similarity gate.
+Candidates rejected by an enforced gate are saved for inspection and do not
+proceed to holdout evaluation.
 
 ### 1. Full Test Suite
 ```
 python -m pytest tests/ -q  # Must pass 100% — zero tolerance
 ```
-Every evolved variant (skill text, tool description, code) triggers the full test suite. If any test fails, the variant is rejected. This is the hard floor — nothing ships that breaks existing functionality.
+**Implemented for skill evolution:** the target Hermes Agent repository's full
+test suite runs by default using the active Python interpreter. A failure,
+timeout, or launch error rejects the candidate; `--skip-tests` is an explicit
+opt-out for development runs. Other artifact types are not currently evolved
+by this CLI.
 
 ### 2. Character/Token Limits
-Evolved text must stay within strict size budgets:
+Evolved text must stay within strict size budgets. The validator enforces the
+skill limit during skill evolution and supports the tool/parameter limits for
+future callers:
 
 | Target | Max Size | Why |
 |--------|----------|-----|
-| Skill files (SKILL.md) | Configurable per skill, default 15KB | Skills are injected as user messages — bloated skills waste context window |
+| Skill files (SKILL.md) | Configurable limit, default 15,000 characters | Skills are injected as user messages — bloated skills waste context window |
 | Tool descriptions | 500 chars | Tool schemas are sent every turn — every extra char multiplies across the entire conversation |
 | System prompt sections | Must not exceed current section size by >20% | Prevents prompt bloat that degrades model attention and increases cost |
 
-The optimizer's fitness function applies a **length penalty** — variants that approach the limit get scored lower even if they're otherwise better. This prevents evolutionary drift toward verbose solutions.
+The optimizer does not currently apply a separate length penalty. Hard size and
+growth checks reject candidates exceeding configured limits.
 
 ### 3. Prompt Caching Compatibility
-Hermes relies on prompt caching to keep costs manageable. Evolved content must not break this:
+Hermes relies on prompt caching to keep costs manageable. The following is a
+deployment policy, not a currently automated candidate constraint:
 
 - **Skills**: Injected as user messages at conversation start. Evolved skills are deployed as new versions — they take effect on NEW sessions only, never mid-conversation.
 - **Tool descriptions**: Part of the tool schema sent with every API call. Changes take effect on next session start. Schema structure (parameter names, types) must NOT change — only the description text.
 - **System prompt sections**: Rebuilt once at session start. Evolved sections deploy as config updates, applied on next session. No mid-session prompt rebuilds.
 
-**Rule: No evolved content is ever hot-swapped into an active conversation.** All changes take effect on the next fresh session.
+**Policy: No evolved content should be hot-swapped into an active conversation.**
+All changes should take effect on the next fresh session.
 
 ### 4. Semantic Preservation
-The optimizer must preserve the core behavior/intent of what it's evolving:
+The optimizer must preserve the core behavior/intent of what it's evolving.
+An independent semantic-similarity gate is planned, but is not currently
+implemented; holdout task scores alone do not prove semantic preservation.
 
 - A skill for "GitHub code review" must still perform code reviews, not drift into something else
 - Tool descriptions must still accurately describe what the tool does
 - System prompt sections must maintain their functional role
 
-This is enforced by including **semantic similarity checks** in the fitness function — the evolved text is compared against the original to ensure it hasn't drifted too far in meaning, only improved in effectiveness.
+The future gate should compare evolved text against the original and reject
+candidates that drift beyond a configured threshold.
 
 ### 5. Deployment via PR (Never Direct Commit)
-All evolved changes go through a pull request:
+All changes intended for deployment must go through human-reviewed pull
+requests. The current local evolution command does not itself enforce this
+workflow:
 
 ```bash
 git checkout -b evolve/<target>-<timestamp>

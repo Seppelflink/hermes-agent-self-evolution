@@ -5,9 +5,12 @@ considered valid. Failed constraints = immediate rejection.
 """
 
 import subprocess
-from pathlib import Path
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from evolution.core.config import EvolutionConfig
 
@@ -40,7 +43,7 @@ class ConstraintValidator:
         results.append(self._check_size(artifact_text, artifact_type))
 
         # 2. Growth limit (if baseline provided)
-        if baseline_text:
+        if baseline_text is not None:
             results.append(self._check_growth(artifact_text, baseline_text, artifact_type))
 
         # 3. Non-empty
@@ -56,41 +59,62 @@ class ConstraintValidator:
         """Run the full hermes-agent test suite. Must pass 100%."""
         try:
             result = subprocess.run(
-                ["python", "-m", "pytest", "tests/", "-q", "--tb=no"],
+                [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=no"],
                 capture_output=True,
                 text=True,
                 timeout=300,
                 cwd=str(hermes_repo),
             )
 
+            output = self._format_process_output(result.stdout, result.stderr)
             if result.returncode == 0:
                 return ConstraintResult(
                     passed=True,
                     constraint_name="test_suite",
                     message="All tests passed",
-                    details=result.stdout.strip().split("\n")[-1] if result.stdout else "",
+                    details=output.splitlines()[-1] if output else "",
                 )
-            else:
-                # Extract failure summary
-                last_lines = result.stdout.strip().split("\n")[-5:] if result.stdout else []
-                return ConstraintResult(
-                    passed=False,
-                    constraint_name="test_suite",
-                    message="Test suite failed",
-                    details="\n".join(last_lines),
-                )
-        except subprocess.TimeoutExpired:
+            return ConstraintResult(
+                passed=False,
+                constraint_name="test_suite",
+                message=f"Test suite failed (exit code {result.returncode})",
+                details=self._last_output_lines(output),
+            )
+        except subprocess.TimeoutExpired as e:
+            output = self._format_process_output(e.stdout, e.stderr)
             return ConstraintResult(
                 passed=False,
                 constraint_name="test_suite",
                 message="Test suite timed out (300s)",
+                details=self._last_output_lines(output),
             )
-        except Exception as e:
+        except FileNotFoundError as e:
+            return ConstraintResult(
+                passed=False,
+                constraint_name="test_suite",
+                message=f"Python executable not found: {e}",
+            )
+        except (OSError, subprocess.SubprocessError) as e:
             return ConstraintResult(
                 passed=False,
                 constraint_name="test_suite",
                 message=f"Failed to run tests: {e}",
             )
+
+    @staticmethod
+    def _format_process_output(stdout, stderr) -> str:
+        """Join captured process output, including byte output from timeouts."""
+        parts = []
+        for output in (stdout, stderr):
+            if output:
+                if isinstance(output, bytes):
+                    output = output.decode(errors="replace")
+                parts.append(output.strip())
+        return "\n".join(parts)
+
+    @staticmethod
+    def _last_output_lines(output: str, count: int = 10) -> str:
+        return "\n".join(output.splitlines()[-count:])
 
     def _check_size(self, text: str, artifact_type: str) -> ConstraintResult:
         size = len(text)
@@ -117,6 +141,19 @@ class ConstraintValidator:
             )
 
     def _check_growth(self, text: str, baseline: str, artifact_type: str) -> ConstraintResult:
+        if not baseline.strip():
+            if not text.strip():
+                return ConstraintResult(
+                    passed=True,
+                    constraint_name="growth_limit",
+                    message="Growth OK: baseline and candidate are both empty",
+                )
+            return ConstraintResult(
+                passed=False,
+                constraint_name="growth_limit",
+                message="Growth cannot be measured against an empty baseline",
+            )
+
         growth = (len(text) - len(baseline)) / max(1, len(baseline))
         max_growth = self.config.max_prompt_growth
 
@@ -149,26 +186,62 @@ class ConstraintValidator:
 
     def _check_skill_structure(self, text: str) -> ConstraintResult:
         """Check that a skill file has valid YAML frontmatter and markdown body."""
-        has_frontmatter = text.strip().startswith("---")
-        has_name = "name:" in text[:500] if has_frontmatter else False
-        has_description = "description:" in text[:500] if has_frontmatter else False
-
-        if has_frontmatter and has_name and has_description:
-            return ConstraintResult(
-                passed=True,
-                constraint_name="skill_structure",
-                message="Skill has valid frontmatter (name + description)",
-            )
-        else:
-            missing = []
-            if not has_frontmatter:
-                missing.append("YAML frontmatter (---)")
-            if not has_name:
-                missing.append("name field")
-            if not has_description:
-                missing.append("description field")
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
             return ConstraintResult(
                 passed=False,
                 constraint_name="skill_structure",
-                message=f"Skill missing: {', '.join(missing)}",
+                message="Skill must start with YAML frontmatter (---)",
             )
+
+        closing_delimiter = next(
+            (index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
+            None,
+        )
+        if closing_delimiter is None:
+            return ConstraintResult(
+                passed=False,
+                constraint_name="skill_structure",
+                message="Skill frontmatter is missing its closing delimiter (---)",
+            )
+
+        try:
+            frontmatter = yaml.safe_load("\n".join(lines[1:closing_delimiter]))
+        except yaml.YAMLError as e:
+            return ConstraintResult(
+                passed=False,
+                constraint_name="skill_structure",
+                message=f"Skill frontmatter is invalid YAML: {e}",
+            )
+
+        if not isinstance(frontmatter, dict):
+            return ConstraintResult(
+                passed=False,
+                constraint_name="skill_structure",
+                message="Skill frontmatter must be a YAML mapping",
+            )
+
+        missing = [
+            field
+            for field in ("name", "description")
+            if not isinstance(frontmatter.get(field), str) or not frontmatter[field].strip()
+        ]
+        if missing:
+            return ConstraintResult(
+                passed=False,
+                constraint_name="skill_structure",
+                message=f"Skill frontmatter requires non-empty: {', '.join(missing)}",
+            )
+
+        if not "\n".join(lines[closing_delimiter + 1:]).strip():
+            return ConstraintResult(
+                passed=False,
+                constraint_name="skill_structure",
+                message="Skill markdown body must not be empty",
+            )
+
+        return ConstraintResult(
+            passed=True,
+            constraint_name="skill_structure",
+            message="Skill has valid YAML frontmatter and a non-empty markdown body",
+        )

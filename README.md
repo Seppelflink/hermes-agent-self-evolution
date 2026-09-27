@@ -99,12 +99,23 @@ before redistribution.
 
 ## Guardrails
 
-Every evolved variant must pass:
-1. **Full test suite** — `pytest tests/ -q` must pass 100%
-2. **Size limits** — Skills ≤15KB, tool descriptions ≤500 chars
-3. **Caching compatibility** — No mid-conversation changes
-4. **Semantic preservation** — Must not drift from original purpose
-5. **PR review** — All changes go through human review, never direct commit
+The evolution command enforces the following candidate gates:
+
+1. **Full test suite (implemented)** — The target Hermes Agent repository's
+   `tests/` suite runs by default using the active Python interpreter. A failed,
+   timed-out, or unlaunchable suite rejects the candidate. Use `--skip-tests`
+   only for an explicitly ungated run.
+2. **Size and structure (implemented)** — Skill files are checked against the
+   15,000-character limit, with valid YAML frontmatter (`name` and
+   `description`) and a non-empty body. The constraint validator also supports
+   500-character tool descriptions and 200-character parameter descriptions.
+3. **Caching compatibility (policy, not an automated gate)** — Evolved content
+   must only be applied to new sessions; schema and parameter changes require
+   separate review.
+4. **Semantic preservation (planned)** — Holdout task scores are reported, but
+   no independent semantic-similarity threshold is currently enforced.
+5. **Human PR review (process requirement)** — Automated validation does not
+   deploy or approve candidates. Review and approve changes before deployment.
 
 ## Full Plan
 
