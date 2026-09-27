@@ -6,6 +6,7 @@ Usage:
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from evolution.core.config import EvolutionConfig, resolve_hermes_agent_path
 from evolution.core.dataset_builder import SyntheticDatasetBuilder, EvalDataset, GoldenDatasetLoader
 from evolution.core.external_importers import build_dataset_from_external
 from evolution.core.fitness import skill_fitness_metric, LLMJudge, FitnessScore
+from evolution.core.lm import create_dspy_lm
 from evolution.core.constraints import ConstraintValidator
 from evolution.skills.skill_module import (
     SkillModule,
@@ -31,6 +33,39 @@ from evolution.skills.skill_module import (
 )
 
 console = Console()
+
+
+def _compile_with_optimizer(
+    baseline_module,
+    trainset,
+    valset,
+    iterations: int,
+    optimizer_lm,
+):
+    """Compile with GEPA and retain the existing MIPROv2 fallback."""
+    try:
+        optimizer = dspy.GEPA(
+            metric=skill_fitness_metric,
+            max_steps=iterations,
+            reflection_lm=optimizer_lm,
+        )
+        return optimizer.compile(
+            baseline_module,
+            trainset=trainset,
+            valset=valset,
+        )
+    except Exception as e:
+        # Fall back to MIPROv2 if GEPA isn't available in this DSPy version.
+        console.print(f"[yellow]GEPA not available ({e}), falling back to MIPROv2[/yellow]")
+        optimizer = dspy.MIPROv2(
+            metric=skill_fitness_metric,
+            auto="light",
+            prompt_model=optimizer_lm,
+        )
+        return optimizer.compile(
+            baseline_module,
+            trainset=trainset,
+        )
 
 
 def evolve(
@@ -43,6 +78,8 @@ def evolve(
     hermes_repo: Optional[str] = None,
     run_tests: bool = False,
     dry_run: bool = False,
+    api_base: Optional[str] = None,
+    api_key_env: Optional[str] = "OPENAI_API_KEY",
 ):
     """Main evolution function — orchestrates the full optimization loop."""
 
@@ -53,6 +90,8 @@ def evolve(
         eval_model=eval_model,
         judge_model=eval_model,  # Use same model for dataset generation
         run_pytest=run_tests,
+        api_base=api_base if api_base is not None else os.getenv("DSPY_API_BASE"),
+        api_key_env=api_key_env,
     )
 
     # ── 1. Find and load the skill ──────────────────────────────────────
@@ -90,6 +129,8 @@ def evolve(
             sources=["claude-code", "copilot", "hermes"],
             output_path=save_path,
             model=eval_model,
+            api_base=config.api_base,
+            api_key_env=config.api_key_env,
         )
         if not dataset.all_examples:
             console.print("[red]✗ No relevant examples found from session history[/red]")
@@ -137,7 +178,16 @@ def evolve(
     console.print(f"  Eval model: {eval_model}")
 
     # Configure DSPy
-    lm = dspy.LM(eval_model)
+    lm = create_dspy_lm(
+        eval_model,
+        api_base=config.api_base,
+        api_key_env=config.api_key_env,
+    )
+    optimizer_lm = create_dspy_lm(
+        optimizer_model,
+        api_base=config.api_base,
+        api_key_env=config.api_key_env,
+    )
     dspy.configure(lm=lm)
 
     # Create the baseline skill module
@@ -152,28 +202,13 @@ def evolve(
 
     start_time = time.time()
 
-    try:
-        optimizer = dspy.GEPA(
-            metric=skill_fitness_metric,
-            max_steps=iterations,
-        )
-
-        optimized_module = optimizer.compile(
-            baseline_module,
-            trainset=trainset,
-            valset=valset,
-        )
-    except Exception as e:
-        # Fall back to MIPROv2 if GEPA isn't available in this DSPy version
-        console.print(f"[yellow]GEPA not available ({e}), falling back to MIPROv2[/yellow]")
-        optimizer = dspy.MIPROv2(
-            metric=skill_fitness_metric,
-            auto="light",
-        )
-        optimized_module = optimizer.compile(
-            baseline_module,
-            trainset=trainset,
-        )
+    optimized_module = _compile_with_optimizer(
+        baseline_module,
+        trainset,
+        valset,
+        iterations,
+        optimizer_lm,
+    )
 
     elapsed = time.time() - start_time
     console.print(f"\n  Optimization completed in {elapsed:.1f}s")
@@ -300,10 +335,14 @@ def evolve(
 @click.option("--dataset-path", default=None, help="Path to existing eval dataset (JSONL)")
 @click.option("--optimizer-model", default="openai/gpt-4.1", help="Model for GEPA reflections")
 @click.option("--eval-model", default="openai/gpt-4.1-mini", help="Model for evaluations")
+@click.option("--api-base", envvar="DSPY_API_BASE", default=None,
+              help="OpenAI-compatible inference endpoint base URL")
+@click.option("--api-key-env", default="OPENAI_API_KEY",
+              help="Environment variable containing the inference API key")
 @click.option("--hermes-repo", default=None, help="Path to hermes-agent repo")
 @click.option("--run-tests", is_flag=True, help="Run full pytest suite as constraint gate")
 @click.option("--dry-run", is_flag=True, help="Validate setup without running optimization")
-def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, hermes_repo, run_tests, dry_run):
+def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, api_base, api_key_env, hermes_repo, run_tests, dry_run):
     """Evolve a Hermes Agent skill using DSPy + GEPA optimization."""
     evolve(
         skill_name=skill,
@@ -312,6 +351,8 @@ def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_mod
         dataset_path=dataset_path,
         optimizer_model=optimizer_model,
         eval_model=eval_model,
+        api_base=api_base,
+        api_key_env=api_key_env,
         hermes_repo=hermes_repo,
         run_tests=run_tests,
         dry_run=dry_run,

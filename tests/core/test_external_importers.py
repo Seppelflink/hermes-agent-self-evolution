@@ -592,8 +592,9 @@ class TestRelevanceFilter:
 
     @pytest.fixture
     def mock_dspy(self):
-        """Mock dspy.LM and dspy.context to avoid real LLM calls."""
-        with patch("evolution.core.external_importers.dspy") as mock:
+        """Mock DSPy context and LM construction to avoid real LLM calls."""
+        with patch("evolution.core.external_importers.dspy") as mock, \
+             patch("evolution.core.external_importers.create_dspy_lm", return_value="test-lm"):
             # Make dspy.context a no-op context manager
             mock.context.return_value.__enter__ = MagicMock(return_value=None)
             mock.context.return_value.__exit__ = MagicMock(return_value=False)
@@ -602,6 +603,8 @@ class TestRelevanceFilter:
     def test_relevant_messages_become_examples(self, mock_dspy):
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         # Mock scorer to return relevant=True
         rf.scorer = MagicMock()
@@ -628,6 +631,8 @@ class TestRelevanceFilter:
     def test_irrelevant_messages_filtered_out(self, mock_dspy):
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
         rf.scorer.return_value = SimpleNamespace(
@@ -644,6 +649,8 @@ class TestRelevanceFilter:
     def test_malformed_llm_output_counted_as_error(self, mock_dspy):
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
         rf.scorer.return_value = SimpleNamespace(scoring="I cannot determine relevance right now")
@@ -658,6 +665,8 @@ class TestRelevanceFilter:
     def test_max_examples_cap_respected(self, mock_dspy):
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
         rf.scorer.return_value = SimpleNamespace(
@@ -675,6 +684,8 @@ class TestRelevanceFilter:
     def test_scorer_exception_counted_as_error(self, mock_dspy):
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock(side_effect=RuntimeError("API timeout"))
 
@@ -685,6 +696,32 @@ class TestRelevanceFilter:
         # Should not raise — errors are caught and counted
         examples = rf.filter_and_score(messages, "categorize", "Sort text into topics.", max_examples=10)
         assert len(examples) == 0
+
+    def test_configured_endpoint_is_passed_to_shared_lm_factory(self, mock_dspy):
+        rf = RelevanceFilter.__new__(RelevanceFilter)
+        rf.model = "openai/local-model"
+        rf.api_base = "http://localhost:8000/v1"
+        rf.api_key_env = "LOCAL_INFERENCE_TOKEN"
+        rf.scorer = MagicMock(return_value=SimpleNamespace(
+            scoring='{"relevant": true, "expected_behavior": "group", "difficulty": "easy", "category": "sorting"}'
+        ))
+
+        with patch(
+            "evolution.core.external_importers.create_dspy_lm",
+            return_value="test-lm",
+        ) as make_lm:
+            rf.filter_and_score(
+                [{"task_input": "categorize these items", "source": "claude-code"}],
+                "categorize",
+                "Categorize text into groups.",
+                max_examples=1,
+            )
+
+        make_lm.assert_called_once_with(
+            "openai/local-model",
+            api_base="http://localhost:8000/v1",
+            api_key_env="LOCAL_INFERENCE_TOKEN",
+        )
 
 
 # ── build_dataset_from_external ──────────────────────────────────────────────
@@ -1046,6 +1083,8 @@ class TestValidationIntegration:
         """LLM returns relevant=True but empty expected_behavior -> example dropped."""
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
         rf.scorer.return_value = SimpleNamespace(
@@ -1063,6 +1102,8 @@ class TestValidationIntegration:
         """LLM returns invalid difficulty -> normalized to medium."""
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
         rf.scorer.return_value = SimpleNamespace(
@@ -1081,6 +1122,8 @@ class TestValidationIntegration:
         """Messages missing 'source' key are dropped before scoring."""
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
         rf.scorer.return_value = SimpleNamespace(
@@ -1100,6 +1143,8 @@ class TestValidationIntegration:
         """Messages missing 'task_input' are dropped before scoring."""
         rf = RelevanceFilter.__new__(RelevanceFilter)
         rf.model = "test-model"
+        rf.api_base = None
+        rf.api_key_env = "OPENAI_API_KEY"
 
         rf.scorer = MagicMock()
 

@@ -24,6 +24,8 @@ class EvolutionConfig:
     optimizer_model: str = "openai/gpt-4.1"  # Model for GEPA reflections
     eval_model: str = "openai/gpt-4.1-mini"  # Model for LLM-as-judge scoring
     judge_model: str = "openai/gpt-4.1"  # Model for dataset generation
+    api_base: Optional[str] = field(default_factory=lambda: os.getenv("DSPY_API_BASE"))
+    api_key_env: Optional[str] = "OPENAI_API_KEY"
 
     # Constraints
     max_skill_size: int = 15_000  # 15KB default
