@@ -49,6 +49,37 @@ python -m evolution.skills.evolve_skill \
     --eval-source sessiondb
 ```
 
+## Local OpenAI-Compatible Inference
+
+Hosted models remain the defaults. To use Codestral Mamba through a local
+OpenAI-compatible inference server, set the server's `/v1` base URL and pass
+the model ID exposed by that server:
+
+```powershell
+$env:DSPY_API_BASE = "http://127.0.0.1:8000/v1"
+python -m evolution.skills.evolve_skill `
+    --skill github-code-review `
+    --optimizer-model "openai/mistralai/Mamba-Codestral-7B-v0.1" `
+    --eval-model "openai/mistralai/Mamba-Codestral-7B-v0.1"
+```
+
+The upstream model repository ID is `mistralai/Mamba-Codestral-7B-v0.1`; the
+`openai/` prefix selects DSPy's OpenAI-compatible LiteLLM provider. If the
+server requires authentication, supply its key through an environment variable
+(the default is `OPENAI_API_KEY`) and select that variable with `--api-key-env`
+if it has another name. If no key is set, the shared LM factory supplies the
+`EMPTY` placeholder only for a configured custom endpoint; hosted-model calls
+receive no placeholder. Do not put credentials in command-line arguments,
+source files, or checked-in configuration. The options also work with the
+standalone external-session importer (`--api-base`, `--api-key-env`), and
+`DSPY_API_BASE` can configure the endpoint through the environment.
+
+The Codestral Mamba reference checkout identifies the model as Apache-2.0
+licensed. That model/weights license is separate from this project's MIT
+license; retain the upstream attribution and license notices when redistributing
+weights or derivatives, and verify the current upstream model card and license
+before redistribution.
+
 ## What It Optimizes
 
 | Phase | Target | Engine | Status |

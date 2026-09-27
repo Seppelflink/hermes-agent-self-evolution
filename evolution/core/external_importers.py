@@ -34,6 +34,7 @@ from rich.console import Console
 from rich.progress import Progress
 
 from evolution.core.dataset_builder import EvalExample, EvalDataset
+from evolution.core.lm import create_dspy_lm
 
 console = Console()
 
@@ -442,9 +443,16 @@ class RelevanceFilter:
         assistant_response: str = dspy.InputField(desc="The assistant's actual response (may be empty)")
         scoring: str = dspy.OutputField(desc="JSON object with: relevant, expected_behavior, difficulty, category")
 
-    def __init__(self, model: str):
+    def __init__(
+        self,
+        model: str,
+        api_base: Optional[str] = None,
+        api_key_env: Optional[str] = "OPENAI_API_KEY",
+    ):
         self.scorer = dspy.ChainOfThought(self.ScoreRelevance)
         self.model = model
+        self.api_base = api_base
+        self.api_key_env = api_key_env
 
     def filter_and_score(
         self,
@@ -490,7 +498,11 @@ class RelevanceFilter:
         # Stage 2: LLM relevance scoring
         examples = []
         errors = 0
-        lm = dspy.LM(self.model)
+        lm = create_dspy_lm(
+            self.model,
+            api_base=self.api_base,
+            api_key_env=self.api_key_env,
+        )
 
         with Progress() as progress:
             task = progress.add_task("Scoring relevance...", total=len(candidates))
@@ -610,6 +622,8 @@ def build_dataset_from_external(
     output_path: Path,
     model: str,
     max_examples: int = 50,
+    api_base: Optional[str] = None,
+    api_key_env: Optional[str] = "OPENAI_API_KEY",
 ) -> EvalDataset:
     """Extract messages from external tools, filter for relevance, and save.
 
@@ -623,6 +637,8 @@ def build_dataset_from_external(
         output_path: Directory to write train/val/holdout JSONL files.
         model: LiteLLM model string for relevance scoring.
         max_examples: Maximum eval examples to generate.
+        api_base: Optional OpenAI-compatible inference endpoint URL.
+        api_key_env: Environment variable containing the endpoint credential.
 
     Returns:
         EvalDataset with train/val/holdout splits.
@@ -651,7 +667,11 @@ def build_dataset_from_external(
     console.print(f"\n[bold]Total messages: {len(all_messages)}[/bold]")
     console.print(f"[bold]Filtering for relevance to skill: {skill_name}[/bold]")
 
-    relevance_filter = RelevanceFilter(model=model)
+    relevance_filter = RelevanceFilter(
+        model=model,
+        api_base=api_base,
+        api_key_env=api_key_env,
+    )
     examples = relevance_filter.filter_and_score(
         all_messages, skill_name, skill_text, max_examples=max_examples,
     )
@@ -738,9 +758,13 @@ def _load_skill_text(skill_name: str, skills_dir: Optional[Path] = None) -> tupl
               help="Output directory (default: datasets/skills/<skill>/)")
 @click.option("--model", default="openrouter/google/gemini-2.5-flash",
               help="LiteLLM model string for relevance scoring")
+@click.option("--api-base", envvar="DSPY_API_BASE", default=None,
+              help="OpenAI-compatible inference endpoint base URL")
+@click.option("--api-key-env", default="OPENAI_API_KEY",
+              help="Environment variable containing the inference API key")
 @click.option("--max-examples", default=50, help="Max eval examples to generate")
 @click.option("--dry-run", is_flag=True, help="Show message counts without LLM scoring")
-def main(source, skill, output, model, max_examples, dry_run):
+def main(source, skill, output, model, api_base, api_key_env, max_examples, dry_run):
     """Import external session data into golden eval datasets for self-evolution."""
     console.print(f"\n[bold cyan]External Session Importer[/bold cyan] — skill: [bold]{skill}[/bold]\n")
 
@@ -778,6 +802,8 @@ def main(source, skill, output, model, max_examples, dry_run):
         output_path=output,
         model=model,
         max_examples=max_examples,
+        api_base=api_base,
+        api_key_env=api_key_env,
     )
 
 
