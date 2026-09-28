@@ -16,6 +16,7 @@ the config dataclass, and the CLI end to end.
 """
 
 from pathlib import Path
+import os
 
 from click.testing import CliRunner
 
@@ -46,8 +47,10 @@ def test_resolve_honors_explicit_path_without_default(tmp_path, monkeypatch):
 def test_resolve_expands_user_home(monkeypatch):
     from evolution.core.config import resolve_hermes_agent_path
 
-    monkeypatch.setenv("HOME", "/home/example")
-    assert resolve_hermes_agent_path("~/code/hermes-agent") == Path("/home/example/code/hermes-agent")
+    home = Path("test-home")
+    home_variable = "USERPROFILE" if os.name == "nt" else "HOME"
+    monkeypatch.setenv(home_variable, str(home))
+    assert resolve_hermes_agent_path("~/code/hermes-agent") == home / "code" / "hermes-agent"
 
 
 def test_resolve_falls_back_to_env_var_when_no_override(tmp_path, monkeypatch):

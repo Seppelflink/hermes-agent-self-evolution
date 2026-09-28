@@ -76,7 +76,7 @@ def evolve(
     optimizer_model: str = "openai/gpt-4.1",
     eval_model: str = "openai/gpt-4.1-mini",
     hermes_repo: Optional[str] = None,
-    run_tests: bool = False,
+    run_tests: bool = True,
     dry_run: bool = False,
     api_base: Optional[str] = None,
     api_key_env: Optional[str] = "OPENAI_API_KEY",
@@ -159,7 +159,7 @@ def evolve(
     # ── 3. Validate constraints on baseline ─────────────────────────────
     console.print(f"\n[bold]Validating baseline constraints[/bold]")
     validator = ConstraintValidator(config)
-    baseline_constraints = validator.validate_all(skill["body"], "skill")
+    baseline_constraints = validator.validate_all(skill["raw"], "skill")
     all_pass = True
     for c in baseline_constraints:
         icon = "✓" if c.passed else "✗"
@@ -220,7 +220,11 @@ def evolve(
 
     # ── 7. Validate evolved skill ───────────────────────────────────────
     console.print(f"\n[bold]Validating evolved skill[/bold]")
-    evolved_constraints = validator.validate_all(evolved_body, "skill", baseline_text=skill["body"])
+    evolved_constraints = validator.validate_all(
+        evolved_full,
+        "skill",
+        baseline_text=skill["raw"],
+    )
     all_pass = True
     for c in evolved_constraints:
         icon = "✓" if c.passed else "✗"
@@ -236,7 +240,29 @@ def evolve(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(evolved_full)
         console.print(f"  Saved failed variant to {output_path}")
-        return
+        raise click.ClickException("Candidate rejected because it failed artifact constraints.")
+
+    if config.run_pytest:
+        console.print("\n[bold]Running full Hermes Agent test suite[/bold]")
+        hermes_repo_path = config.hermes_agent_path
+        if hermes_repo_path is None:
+            raise click.ClickException(
+                "Cannot run the test-suite guardrail without a Hermes Agent repository path."
+            )
+        test_result = validator.run_test_suite(hermes_repo_path)
+        icon = "✓" if test_result.passed else "✗"
+        color = "green" if test_result.passed else "red"
+        console.print(f"  [{color}]{icon} {test_result.constraint_name}[/{color}]: {test_result.message}")
+        if test_result.details:
+            console.print(test_result.details)
+        if not test_result.passed:
+            output_path = Path("output") / skill_name / "evolved_FAILED.md"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(evolved_full)
+            console.print(f"  Saved failed variant for inspection to {output_path}")
+            raise click.ClickException("Candidate rejected because the Hermes Agent test suite failed.")
+    else:
+        console.print("[yellow]Test-suite guardrail skipped by explicit configuration.[/yellow]")
 
     # ── 8. Evaluate on holdout set ──────────────────────────────────────
     console.print(f"\n[bold]Evaluating on holdout set ({len(dataset.holdout)} examples)[/bold]")
@@ -340,7 +366,8 @@ def evolve(
 @click.option("--api-key-env", default="OPENAI_API_KEY",
               help="Environment variable containing the inference API key")
 @click.option("--hermes-repo", default=None, help="Path to hermes-agent repo")
-@click.option("--run-tests", is_flag=True, help="Run full pytest suite as constraint gate")
+@click.option("--run-tests/--skip-tests", default=True,
+              help="Run the full pytest suite as a candidate gate (default: run)")
 @click.option("--dry-run", is_flag=True, help="Validate setup without running optimization")
 def main(skill, iterations, eval_source, dataset_path, optimizer_model, eval_model, api_base, api_key_env, hermes_repo, run_tests, dry_run):
     """Evolve a Hermes Agent skill using DSPy + GEPA optimization."""
